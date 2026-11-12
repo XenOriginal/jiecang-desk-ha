@@ -36,25 +36,3 @@ bash 智能桌归档/工具/刷新快照.sh
 1. **手控器永远保留** —— 拔掉我们的板子就回到原厂状态。
 2. **移动中不要轮询** —— `0x07` 会打断自驱运动，表现为"每 400 ms 只走 10 mm"。
 3. **`0x7E` 不转义** —— 必须按 `LEN` 算帧长再验 `CHK`，不能扫终止符。
-
----
-
-## 关于这份仓库
-
-发布版做过脱敏：Wi-Fi SSID、内网地址、个人实体 id 和本机绝对路径都换成了占位符
-（`YOUR_2G_SSID` / `YOUR_HA_HOST` / `person.you` / `$HOME`）。
-
-`secrets.yaml` **从未入库**。首次使用请复制模板再填自己的值：
-
-```bash
-cp esphome/secrets.example.yaml esphome/secrets.yaml
-```
-
-API 加密密钥必须是 base64 的 32 字节（十六进制不行）：
-
-```bash
-python -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"
-```
-
-> 这套改造直接操作 220 V 升降桌的控制器。任何接线改动前先断电，量过电平再上手。
-> 本项目按"原样提供"，不承担设备损坏或人身伤害的责任。
