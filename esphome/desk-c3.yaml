@@ -1,0 +1,490 @@
+# =============================================================================
+# ESP32-C3 Super Mini  ->  Jiecang JCB36NE3A-230 (RJ11 "F" port)
+#
+#   board RX (IO20)  <-- 10k/20k divider <-- RJ11 pin3 (box TX)
+#   board TX (IO21)  --> 100 R series (opt. BAT54S clamp) --> RJ11 pin5 (box RX)
+#   board GND        ---- RJ11 pin2 / pin6
+#   RJ11 pin4 (5V)   ---- NOT CONNECTED
+#   board 5V         <--- separate USB 5V supply
+#
+# Why IO20/IO21 and not IO4/IO5: on the ESP32-C3 Super Mini, IO4-IO7 carry
+# bootstrapping / JTAG / Quad-SPI flash duties, and IO2/IO8/IO9 are strapping
+# pins (IO8 must be HIGH at reset, IO9 selects download mode). IO20/IO21 are
+# the dedicated UART0 pins with none of those duties. The trade-off is that the
+# console moves to USB-Serial-JTAG, see `logger:` below.
+#
+# TX level: pin5 measured 3.3 V against pin2, so the box's RX is 3.3 V logic and
+# a series resistor is enough - no level shifter needed. Re-measure with the
+# CH340 TX disconnected before trusting that number (the CH340 idles its TX high
+# and could be the source of the 3.3 V you see). If it turns out to be ~5 V, use
+# a NON-INVERTING BSS138 shifter. Never use a single N-MOSFET open-drain stage:
+# it INVERTS the signal, and since UART idles HIGH the box's RX line would sit in
+# the break state whenever we are not transmitting - nothing would get through.
+# =============================================================================
+
+substitutions:
+  name: desk-c3
+  friendly_name: Desk
+  # Real mechanical travel measured on this desk, NOT the configured soft limits.
+  # The soft limits read 850..1130 but the frame physically stops at 851 / 1129.
+  desk_min: "851"
+  desk_max: "1129"
+  desk_sit: "851"
+  desk_stand: "1129"
+  # 开机时是否发一帧 0x07 把初始状态同步过来。
+  # 这一帧会让手控器屏幕亮一次（约十几秒后自己回待机），只在上电/OTA 后发生。
+  # 想做到"开机也一帧不发"，把它改成 "false"：代价是 HA 里的高度要等到
+  # 第一次真正动桌子（手控器或本机命令）之后才有值。
+  boot_sync: "true"
+  # 一次运动结束之后，是否补发一帧 0x07 把限位/记忆位/最终高度对齐。
+  # 高度本身在运动过程中已经从被动报文里拿到了，这一帧只是保险
+  # （防止尾部帧丢失导致高度差几毫米）。设成 "false" 就是彻底零额外流量：
+  # 只有我们主动下命令时总线上才会有东西。
+  post_motion_sync: "true"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  includes:
+    - desk_proto.h
+  on_boot:
+    priority: -100
+    then:
+      - delay: 1s
+      # 先用出厂软限位把 HA 的 cover 计算喂住，这样即使一帧都不发，
+      # 百分比换算也是对的（真实值等第一次抓取时再覆盖）。
+      - lambda: |-
+          id(s_soft_min).publish_state(850);
+          id(s_soft_max).publish_state(1130);
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# UART0 goes to the desk protocol, so the console moves to the native USB.
+# `esphome logs` still works over the USB-C port.
+logger:
+  level: INFO
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+  encryption:
+    key: !secret desk_api_key
+
+ota:
+  - platform: esphome
+    password: !secret desk_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Super Mini 的陶瓷天线 + 桌下金属桌架是典型射频坟场，但实测 AP 就在附近
+  # （2.4G 扫描 RSSI 约 -44 dBm），不需要满功率发射。
+  # 这块板子的老问题：满功率发射时 Wi-Fi 峰值电流把 3V3 拉塌，表现为反复掉线、
+  # brownout 重启、连不上 AP。降功率是最有效的办法。
+  # 8.5dB 只是"够用"，若信号变差按 11dB -> 13dB 逐级加回。
+  output_power: 8.5dB
+  # 用默认的 light（modem sleep），不要用 none。
+  # none 会让射频持续常醒，平均电流是 light 的好几倍；这块板的 3V3 余量很小，
+  # 实测 none + WPA3 握手 = 反复 Auth Failed / Auth Expired，light 才连得上。
+  power_save_mode: light
+  ap:
+    ssid: "${name} fallback"
+
+captive_portal:
+
+uart:
+  id: desk_uart
+  rx_pin: GPIO20        # silkscreen "RX",  <- RJ11 pin3 through the divider
+  tx_pin: GPIO21        # silkscreen "TX",  -> RJ11 pin5 through 100 R (3V3 logic)
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+# -----------------------------------------------------------------------------
+# state
+# -----------------------------------------------------------------------------
+globals:
+  - id: g_rx
+    type: std::vector<uint8_t>
+  - id: g_last_rx          # 最近一帧到达（收发都算，用来判断总线是否安静）
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_tx          # 最近一次本机发送
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_move        # 最近一次高度真的发生变化
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_pub         # 高度上报节流
+    type: uint32_t
+    initial_value: "0"
+  - id: g_height
+    type: int
+    initial_value: "0"
+  - id: g_was_moving
+    type: bool
+    initial_value: "false"
+  - id: g_sync_armed       # 一次运动刚结束 -> 记一次"可以抓状态了"
+    type: bool
+    initial_value: "false"
+  - id: g_boot_done
+    type: bool
+    initial_value: "false"
+  - id: g_rx_frames        # 收到过的有效帧总数（诊断用：空闲时这个数字必须不动）
+    type: uint32_t
+    initial_value: "0"
+  - id: g_pub_frames
+    type: uint32_t
+    initial_value: "0"
+
+# -----------------------------------------------------------------------------
+# 帧解析 + 状态机
+#
+# 【为什么不再轮询】
+# 手控器和控制盒挂在同一条总线上，屏幕上显示的高度就是从这条总线来的。
+# 因此**总线上任何一帧都会唤醒手控器屏幕**：原来每 900 ms 发一帧 0x07
+# 请求设置，正好每 900 ms 给它的待机计时器续一次命，屏幕于是永不熄灭。
+#
+# 【现在的策略：零后台流量】
+#   * 空闲时一帧不发。
+#   * 手控器动桌子时，它和盒子之间的报文我们照样能在 RX 上收到 ——
+#     那就是天然的"取数窗口"，直接从这些报文里解析高度，不用问。
+#   * 一次运动结束后（总线安静 >400ms、运动停止 >1.2s）补发**一帧**
+#     0x07，把限位/记忆位这些静态信息对齐一次。此时屏幕本来就被
+#     刚才的操作点亮着，不存在把待机打断的问题。
+#   * 开机时最多一帧（substitutions.boot_sync 可关）。
+# -----------------------------------------------------------------------------
+interval:
+  - interval: 25ms
+    then:
+      - lambda: |-
+          auto *u = id(desk_uart);
+          // ESPHome 2026.x: UARTComponent exposes available()/read_byte(),
+          // the int read() helper only exists on the UARTDevice wrapper.
+          while (u->available() > 0) {
+            uint8_t byte = 0;
+            if (!u->read_byte(&byte)) break;
+            if (id(g_rx).size() < 96) id(g_rx).push_back(byte);
+          }
+          auto &buf = id(g_rx);
+          while (buf.size() >= 4) {
+            if (buf[0] != 0xF2 || buf[1] != 0xF2) { buf.erase(buf.begin()); continue; }
+            const size_t len = buf[3];
+            const size_t total = 6 + len;          // F2 F2 CMD LEN ... CHK 7E
+            if (buf.size() < total) break;         // wait for the rest
+            uint8_t cs = 0;
+            for (size_t k = 2; k < 4 + len; k++) cs = static_cast<uint8_t>(cs + buf[k]);
+            // never split on 0x7E: it is not escaped and does appear in payloads
+            if (cs != buf[total - 2] || buf[total - 1] != 0x7E) {
+              buf.erase(buf.begin());
+              continue;
+            }
+            id(g_last_rx) = millis();
+            id(g_rx_frames) = id(g_rx_frames) + 1;
+            const uint8_t cmd = buf[2];
+
+            if (cmd == desk::REP_HEIGHT && len >= 2) {
+              const int h = desk::be16(&buf[4]);
+              if (h != id(g_height)) {
+                id(g_height) = h;
+                id(g_last_move) = millis();
+                // 运动中的高度按 120ms 节流上报，别把 API 刷爆
+                if (millis() - id(g_last_pub) > 120 || id(g_height) == 0) {
+                  id(g_last_pub) = millis();
+                  id(s_height).publish_state(h);
+                }
+              }
+            } else if (cmd == desk::REP_LIMIT_MAX && len == 2) {
+              id(s_soft_max).publish_state(desk::be16(&buf[4]));
+            } else if (cmd == desk::REP_LIMIT_MIN && len == 2) {
+              id(s_soft_min).publish_state(desk::be16(&buf[4]));
+            } else if (cmd >= desk::REP_PRESET_1 && cmd <= desk::REP_PRESET_4 && len == 2) {
+              const float v = desk::be16(&buf[4]);
+              switch (cmd) {
+                case desk::REP_PRESET_1: id(s_preset_1).publish_state(v); break;
+                case desk::REP_PRESET_2: id(s_preset_2).publish_state(v); break;
+                case desk::REP_PRESET_3: id(s_preset_3).publish_state(v); break;
+                default:                 id(s_preset_4).publish_state(v); break;
+              }
+            }
+            buf.erase(buf.begin(), buf.begin() + total);
+          }
+
+  # --- 状态机：运动判定 + 一次运动结束后的单帧补抓 -------------------------
+  - interval: 250ms
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+
+          // 运动判定：高度在最近 900ms 内变过就算在动
+          const bool moving = id(g_height) != 0 && (now - id(g_last_move) < 900);
+          if (moving != id(g_was_moving)) {
+            id(g_was_moving) = moving;
+            id(bs_moving).publish_state(moving);
+            // 刚停下来 -> 打开一次"抓状态"的机会
+            if (!moving) id(g_sync_armed) = true;
+          }
+
+          // 开机后的一次性同步（可用 boot_sync: "false" 关掉）
+          if (!id(g_boot_done) && now > 3000) {
+            id(g_boot_done) = true;
+            if (id(g_height) == 0) {
+              const bool boot_sync = ${boot_sync};
+              if (boot_sync) {
+                desk::primed_read(id(desk_uart));
+                id(g_last_tx) = now;
+              }
+            }
+          }
+
+          // 补抓窗口：运动已停 1.2s、总线安静 400ms、自己没在刚发过东西。
+          // 只消费一次（g_sync_armed 置回 false），所以绝不会变成轮询。
+          const bool post_sync = ${post_motion_sync};
+          if (post_sync && id(g_sync_armed) && !moving &&
+              now - id(g_last_move) > 1200 &&
+              now - id(g_last_rx) > 400 &&
+              now - id(g_last_tx) > 1200) {
+            desk::primed_read(id(desk_uart));
+            id(g_last_tx) = now;
+            id(g_sync_armed) = false;
+          }
+
+          // 诊断计数器：空闲时这个值应当纹丝不动
+          if (id(g_rx_frames) != id(g_pub_frames)) {
+            id(g_pub_frames) = id(g_rx_frames);
+            id(s_rx_frames).publish_state(static_cast<float>(id(g_rx_frames)));
+          }
+
+# -----------------------------------------------------------------------------
+# entities
+# English names keep the HA entity_ids predictable; rename in the UI if you
+# prefer Chinese, or set friendly_name on the device only.
+# -----------------------------------------------------------------------------
+sensor:
+  - platform: template
+    name: "Desk Height"
+    id: s_height
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    icon: mdi:desk
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Soft Min"
+    id: s_soft_min
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Soft Max"
+    id: s_soft_max
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Preset 1"
+    id: s_preset_1
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Preset 2"
+    id: s_preset_2
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Preset 3"
+    id: s_preset_3
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  - platform: template
+    name: "Preset 4"
+    id: s_preset_4
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+    lambda: return {};
+
+  # 诊断：收到过的有效帧总数。空闲时这个数字必须纹丝不动 ——
+  # 一旦它自己在涨，说明总线上还有别的东西在说话（或者轮询又被加回来了）。
+  - platform: template
+    name: "Rx Frames"
+    id: s_rx_frames
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:counter
+    update_interval: never
+    lambda: return {};
+
+binary_sensor:
+  # State is pushed from the 200 ms interval below; template binary sensors in
+  # current ESPHome no longer accept `update_interval`.
+  - platform: template
+    name: "Desk Moving"
+    id: bs_moving
+    icon: mdi:arrow-expand-vertical
+
+number:
+  - platform: template
+    name: "Target Height"
+    id: n_target
+    unit_of_measurement: mm
+    icon: mdi:arrow-expand-vertical
+    min_value: ${desk_min}
+    max_value: ${desk_max}
+    step: 1
+    optimistic: true
+    restore_value: false
+    # Deliberately NO set_action: this is a value field, not a trigger.
+    #
+    # Why: Home Assistant de-duplicates state writes. Asking for the same target
+    # twice in a row (e.g. "sit" twice, or a re-run automation) would never reach
+    # the ESP, so the desk would silently do nothing. HA therefore writes the
+    # number and then presses "Apply Target" below, which is stateless and always
+    # fires. Keeping the two apart also guarantees exactly one frame per command.
+
+button:
+  - platform: template
+    name: "Stand"
+    icon: mdi:human-handsup
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_GOTO_4);
+
+  - platform: template
+    name: "Sit"
+    icon: mdi:seat
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_GOTO_1);
+
+  - platform: template
+    name: "Go Preset 2"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_GOTO_2);
+
+  - platform: template
+    name: "Go Preset 3"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_GOTO_3);
+
+  - platform: template
+    name: "Step Up"
+    icon: mdi:arrow-up-bold
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_STEP_UP);
+
+  - platform: template
+    name: "Step Down"
+    icon: mdi:arrow-down-bold
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          desk::primed_simple(id(desk_uart), desk::CMD_STEP_DOWN);
+
+  - platform: template
+    name: "Emergency Stop"
+    icon: mdi:stop-circle-outline
+    on_press:
+      - lambda: |-
+          // 预热一帧后连发三次急停：急停是幂等的，多发没坏处，漏发会出事
+          desk::simple(id(desk_uart), desk::CMD_SETTINGS);
+          delay(70);
+          for (int i = 0; i < 3; i++) {
+            desk::simple(id(desk_uart), desk::CMD_STOP);
+            delay(30);
+          }
+
+  # Stateless trigger for the target height above. Press this after writing
+  # "Target Height"; HA calls the pair (write number -> press this).
+  - platform: template
+    name: "Apply Target"
+    icon: mdi:arrow-expand-vertical
+    on_press:
+      - lambda: |-
+          id(g_last_tx) = millis();
+          const uint16_t h = static_cast<uint16_t>(id(n_target).state + 0.5f);
+          // 预热 + 目标帧发两遍：残帧会让桌子朝错误目标跑（实测 50mm 过冲）
+          desk::primed_goto(id(desk_uart), h);
+
+  # --- overwrite a preset with the CURRENT height (destructive) ---
+  - platform: template
+    name: "Save Current as Preset 1"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          desk::primed_simple(id(desk_uart), desk::CMD_SAVE_1);
+          delay(300);
+          desk::primed_read(id(desk_uart));
+
+  - platform: template
+    name: "Save Current as Preset 2"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          desk::primed_simple(id(desk_uart), desk::CMD_SAVE_2);
+          delay(300);
+          desk::primed_read(id(desk_uart));
+
+  - platform: template
+    name: "Save Current as Preset 3"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          desk::primed_simple(id(desk_uart), desk::CMD_SAVE_3);
+          delay(300);
+          desk::primed_read(id(desk_uart));
+
+  - platform: template
+    name: "Save Current as Preset 4"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          desk::primed_simple(id(desk_uart), desk::CMD_SAVE_4);
+          delay(300);
+          desk::primed_read(id(desk_uart));
+
+  # 手动同步：平时完全不需要按（运动结束会自动补抓一次）。
+  # 只有在"手控器刚改过设置、HA 这边数字没跟上"时才按一下 ——
+  # 按了这一下屏幕会亮一次，是预期行为。
+  - platform: template
+    name: "Refresh State"
+    icon: mdi:refresh
+    entity_category: config
+    on_press:
+      - lambda: |-
+          desk::primed_read(id(desk_uart));
+          id(g_last_tx) = millis();

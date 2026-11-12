@@ -1,0 +1,79 @@
+INFO ESPHome 2026.10.2
+INFO Reading configuration desk-c3.yaml...
+WARNING 'ota' password wastes significant flash and RAM; using 'encryption' instead is recommended - see https://esphome.io/components/ota/esphome/#configuration-variables
+INFO Core config or version changed, cleaning build files...
+INFO Generating C++ source...
+INFO Setting CONFIG_LWIP_MAX_SOCKETS to 12 (TCP=6 [api=3, captive_portal=3], UDP=3 [captive_portal=1, mdns=2], TCP_LISTEN=3 [api=1, ota=1, web_server_base=1])
+INFO Compiling app... Build path: C:\Users\WIFI\WorkBuddy\2026-11-09-21-21-45\esphome\.esphome\build\desk-c3
+INFO Checking ESP-IDF 5.5.6 framework ...
+INFO Downloading ESP-IDF 5.5.6 framework ...
+[safe-delete][SAFE_DELETE_FAIL_CLOSED] {"target": "C:\\Users\\WIFI\\AppData\\Local\\esphome\\Cache\\idf\\dist\\esp-idf-5.5.6.tar.xz", "reason": "trash-failed", "detail": "SHFileOperationW 失败: 0x78"}
+INFO Patched C:\Users\WIFI\AppData\Local\esphome\Cache\idf\frameworks\5.5.6\tools\tools.json to skip installing tools ESPHome does not use (openocd, gdb, ULP toolchains).
+INFO Installing ESP-IDF 5.5.6 framework ...
+INFO Downloading 6 ESP-IDF tool archive(s): cmake@3.30.2, ninja@1.12.1, riscv32-esp-elf@esp-14.2.0_20260121, idf-exe@1.0.3, ccache@4.12.1, esp-rom-elfs@20260528
+Extracting 6 ESP-IDF tool archive(s) with 4 worker(s): cmake@3.30.2, ninja@1.12.1, riscv32-esp-elf@esp-14.2.0_20260121, idf-exe@1.0.3, ccache@4.12.1, esp-rom-elfs@20260528
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\idf-exe-v1.0.3.zip to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\idf-exe\1.0.3
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\ninja-win-v1.12.1.zip to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\ninja\1.12.1
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\riscv32-esp-elf-14.2.0_20260121-x86_64-w64-mingw32.zip to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\riscv32-esp-elf\esp-14.2.0_20260121
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\cmake-3.30.2-windows-x86_64.zip to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\cmake\3.30.2
+extracted idf-exe@1.0.3
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\ccache-4.12.1-windows-x86_64.zip to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\ccache\4.12.1
+extracted ninja@1.12.1
+Extracting C:\Users\WIFI\AppData\Local\esphome\Cache\idf\dist\esp-rom-elfs-20260528.tar.gz to C:\Users\WIFI\AppData\Local\esphome\Cache\idf\tools\esp-rom-elfs\20260528
+extracted esp-rom-elfs@20260528
+extracted ccache@4.12.1
+extracted cmake@3.30.2
+extracted riscv32-esp-elf@esp-14.2.0_20260121
+ERROR: MSys/Mingw is not supported. Please follow the getting started guide of the documentation to set up a supported environment
+ERROR ESP-IDF 5.5.6 framework installation - failed (returncode=1)
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\__main__.py", line 2785, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\__main__.py", line 2776, in main
+    return run_esphome(sys.argv)
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\__main__.py", line 2768, in run_esphome
+    return POST_CONFIG_ACTIONS[args.command](args, config)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\__main__.py", line 1730, in command_compile
+    exit_code = compile_program(args, config)
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\__main__.py", line 865, in compile_program
+    rc = toolchain.run_compile(config, CORE.verbose)
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 870, in run_compile
+    if (rc := _configure_project(verbose)) != 0:
+              ~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 651, in _configure_project
+    if (cached := load_cached_builtin_components()) is not None:
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 597, in load_cached_builtin_components
+    if (path := _builtin_component_cache_path()) is None:
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 587, in _builtin_component_cache_path
+    _get_idf_path() / ".esphome_component_lists" / f"{target}-{excluded_key}.json"
+    ~~~~~~~~~~~~~^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 113, in _get_idf_path
+    return Path(_get_esphome_esp_idf_paths(version)[0])
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\toolchain.py", line 100, in _get_esphome_esp_idf_paths
+    paths[version] = check_esp_idf_install(
+                     ~~~~~~~~~~~~~~~~~~~~~^
+        version,
+        ^^^^^^^^
+        targets=_get_configured_targets(),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        source_url=_get_framework_source_override(),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\framework.py", line 1295, in check_esp_idf_install
+    framework_path, fresh_extract = _check_esphome_idf_framework_install(
+                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        version, targets, tools, force=force, env=env, source_url=source_url
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\WIFI\.workbuddy\binaries\python\versions\3.13.12\Lib\site-packages\esphome\espidf\framework.py", line 1087, in _check_esphome_idf_framework_install
+    raise RuntimeError(f"ESP-IDF {version} framework installation failure")
+RuntimeError: ESP-IDF 5.5.6 framework installation failure

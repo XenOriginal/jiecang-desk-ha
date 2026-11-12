@@ -1,0 +1,261 @@
+# =============================================================================
+# 书桌 · Home Assistant 侧（决策：走 HA 主线，不接米家）
+#
+# 部署：/config/packages/desk.yaml
+#       configuration.yaml 里需有：
+#         homeassistant:
+#           packages: !include_dir_named packages
+#
+# 实体 ID 已按 2026-11-10 实际上线结果核对（ESPHome 设备名 Desk，
+# 实体名重复带了 Desk 前缀，所以是 sensor.desk_desk_height 这种）：
+#   sensor.desk_desk_height          当前高度 mm
+#   number.desk_target_height        纯数值框（写入不触发动作）
+#   button.desk_apply_target         把数值发给控制盒
+#   button.desk_step_up/down         单步约 10mm
+#   button.desk_sit  = 记忆1（851）  button.desk_stand = 记忆4（1129）
+#   button.desk_go_preset_2/3        记忆 2 / 3
+#   button.desk_emergency_stop       急停（0x2B）
+#   binary_sensor.desk_desk_moving   运动中
+#   sensor.desk_soft_min/max         软限位 850/1130
+#   sensor.desk_preset_1..4          记忆位高度
+#
+# 设计说明：
+#   1) HA 对「写入相同状态」会去重。若把 number.target_height 的 set_action
+#      当触发器，连说两次「坐下」时第二次到不了 ESP —— 桌子不动且无报错。
+#      所以固件把 number 做成纯数值框，另给无状态的 Apply 按钮，
+#      这里统一走 script.desk_goto（写数值 → 按按钮），保证每次都有帧发出。
+#   2) 所有运动都收敛到这一个入口，急停 / 超时保护 / 日志只有一条路径。
+# =============================================================================
+
+# --- 唯一运动入口 -----------------------------------------------------------
+script:
+  desk_goto:
+    alias: "书桌：去指定高度"
+    icon: mdi:desk
+    mode: queued
+    max: 3
+    fields:
+      height:
+        name: 目标高度
+        description: 单位 mm，实际可用范围 851-1129
+        required: true
+        example: 1000
+        selector:
+          number:
+            min: 800
+            max: 1200
+            step: 1
+            unit_of_measurement: mm
+    sequence:
+      - action: number.set_value
+        target:
+          entity_id: number.desk_target_height
+        data:
+          # 夹到真实可用区间（软限位 850/1130 各内缩 1mm）。不夹的话，
+          # 传入 1130 / 850 会被 number 实体的 851–1129 校验直接拒绝，
+          # 前端只会弹一句「超出有效范围」，桌子纹丝不动。
+          value: >-
+            {% set lo = states('sensor.desk_soft_min') | float(850) + 1 %}
+            {% set hi = states('sensor.desk_soft_max') | float(1130) - 1 %}
+            {{ [[height | int(0), lo | int] | max, hi | int] | min }}
+      # 给 ESPHome 一点时间接收数值，再触发无状态按钮
+      - delay:
+          milliseconds: 250
+      - action: button.press
+        target:
+          entity_id: button.desk_apply_target
+
+  desk_go_preset:
+    alias: "书桌：去记忆位"
+    icon: mdi:desk
+    mode: queued
+    max: 3
+    fields:
+      which:
+        name: 记忆位
+        description: 1=坐姿底 2/3=三等分 4=站立顶
+        required: true
+        example: 4
+        selector:
+          number:
+            min: 1
+            max: 4
+            step: 1
+    sequence:
+      - choose:
+          - conditions: "{{ which | int(0) == 1 }}"
+            sequence:
+              - action: button.press
+                target:
+                  entity_id: button.desk_sit
+          - conditions: "{{ which | int(0) == 2 }}"
+            sequence:
+              - action: button.press
+                target:
+                  entity_id: button.desk_go_preset_2
+          - conditions: "{{ which | int(0) == 3 }}"
+            sequence:
+              - action: button.press
+                target:
+                  entity_id: button.desk_go_preset_3
+          - conditions: "{{ which | int(0) == 4 }}"
+            sequence:
+              - action: button.press
+                target:
+                  entity_id: button.desk_stand
+
+# --- cover：给 HomeKit / 语音 / 前端滑杆用 ----------------------------------
+# 0% = 最低（坐），100% = 最高（站）——滑杆左低右高，和「把桌子抬上去」一致。
+#
+# 两个坑：
+#   1) 不要设 device_class。设成 shutter/curtain 后，前端把整套文案换成「窗帘」，
+#      连上下按钮的提示都是「打开窗帘 / 关闭窗帘」，完全对不上桌子。
+#      改给 icon: mdi:desk，前端就按普通 cover 处理。
+#   2) 软限位报的是 850/1130，但控制盒真有 1mm 死区，并且 number 实体的有效区间
+#      是 851–1129。直接拿 soft_max 当目标会报「1130 超出 851-1129 有效范围」，
+#      所以端点各内缩 1mm。
+template:
+  - cover:
+      - name: Desk
+        unique_id: desk_cover_esphome
+        icon: mdi:desk
+        optimistic: false
+        position: >-
+          {% set lo = states('sensor.desk_soft_min') | float(850) + 1 %}
+          {% set hi = states('sensor.desk_soft_max') | float(1130) - 1 %}
+          {% set h = states('sensor.desk_desk_height') | float(lo) %}
+          {{ ((h - lo) / (hi - lo) * 100) | round(0) | int | clamp(0, 100) }}
+        open_cover:
+          - action: script.desk_goto
+            data:
+              height: >-
+                {% set hi = states('sensor.desk_soft_max') | float(1130) - 1 %}
+                {{ hi | int }}
+        close_cover:
+          - action: script.desk_goto
+            data:
+              height: >-
+                {% set lo = states('sensor.desk_soft_min') | float(850) + 1 %}
+                {{ lo | int }}
+        stop_cover:
+          - action: button.press
+            target:
+              entity_id: button.desk_emergency_stop
+        set_cover_position:
+          - action: script.desk_goto
+            data:
+              height: >-
+                {% set lo = states('sensor.desk_soft_min') | float(850) + 1 %}
+                {% set hi = states('sensor.desk_soft_max') | float(1130) - 1 %}
+                {% set p = position | float(0) | clamp(0, 100) %}
+                {{ (lo + p / 100 * (hi - lo)) | round(0) | int }}
+
+  # --- 坐 / 站判定：阈值取行程中点，不写死 990 ------------------------------
+  - binary_sensor:
+      - name: Desk Sitting
+        unique_id: desk_sitting
+        device_class: occupancy
+        icon: mdi:seat
+        state: >-
+          {% set lo = states('sensor.desk_soft_min') | float(851) %}
+          {% set hi = states('sensor.desk_soft_max') | float(1129) %}
+          {% set mid = (lo + hi) / 2 %}
+          {{ states('sensor.desk_desk_height') | float(lo) < mid }}
+
+      - name: Desk Standing
+        unique_id: desk_standing
+        device_class: occupancy
+        icon: mdi:human-handsup
+        state: >-
+          {% set lo = states('sensor.desk_soft_min') | float(851) %}
+          {% set hi = states('sensor.desk_soft_max') | float(1129) %}
+          {% set mid = (lo + hi) / 2 %}
+          {{ states('sensor.desk_desk_height') | float(lo) >= mid }}
+
+# --- 今日站立时长 -----------------------------------------------------------
+sensor:
+  - platform: history_stats
+    name: Desk Standing Today
+    unique_id: desk_standing_today
+    entity_id: binary_sensor.desk_standing
+    state: "on"
+    type: time
+    start: "{{ today_at('00:00') }}"
+    end: "{{ now() }}"
+
+# --- 自动化 -----------------------------------------------------------------
+automation:
+  # 1) 久坐提醒：连续坐 45 分钟
+  #    trigger 的 for 从「变成 sitting」开始算，桌子一升起来就自动复位，
+  #    不需要额外的计时器实体。
+  - id: desk_sit_reminder
+    alias: "书桌：久坐提醒"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.desk_sitting
+        to: "on"
+        for: "00:45:00"
+    condition:
+      - condition: state
+        entity_id: person.you
+        state: "home"
+    action:
+      - action: notify.persistent_notification
+        data:
+          title: "该站起来了"
+          message: >-
+            已连续坐 45 分钟，当前 {{ states('sensor.desk_desk_height') }} mm。
+            说一句「把书桌升上去」或按一下「站」即可。
+      # 想让它自动升起来，就取消下面三行的注释
+      # - action: button.press
+      #   target:
+      #     entity_id: button.desk_stand
+
+  # 2) 久站提醒：站满 60 分钟
+  - id: desk_stand_reminder
+    alias: "书桌：久站提醒"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.desk_standing
+        to: "on"
+        for: "01:00:00"
+    action:
+      - action: notify.persistent_notification
+        data:
+          title: "站太久了"
+          message: "已连续站立 1 小时，坐一会儿。"
+
+  # 3) 离家 10 分钟归位（防止桌子留在半空挡路）
+  - id: desk_away_reset
+    alias: "书桌：离家归位"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: person.you
+        to: "not_home"
+        for: "00:10:00"
+    action:
+      - action: script.desk_go_preset
+        data:
+          which: 1
+
+  # 4) 失控保护：连续运动超过 90 秒就急停
+  #    正常一次全程升降约 8 秒，90 秒意味着卡住、堵转或协议异常。
+  - id: desk_runaway_stop
+    alias: "书桌：运动超时急停"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.desk_desk_moving
+        to: "on"
+        for: "00:01:30"
+    action:
+      - action: button.press
+        target:
+          entity_id: button.desk_emergency_stop
+      - action: notify.persistent_notification
+        data:
+          title: "书桌已急停"
+          message: "检测到连续运动超过 90 秒，已发急停。请检查是否有异物卡住。"

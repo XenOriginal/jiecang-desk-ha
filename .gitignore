@@ -1,0 +1,15 @@
+# 真实密钥，永不入库
+secrets.yaml
+**/secrets.yaml
+
+# ESPHome / ESP-IDF 构建产物
+.esphome/
+*.bin
+*.elf
+*.map
+.pio/
+
+# 本地杂项
+.gh_user.json
+.DS_Store
+Thumbs.db
